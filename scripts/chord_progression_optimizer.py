@@ -235,17 +235,18 @@ def brute_force_optimize(
     """
     Brute force search for optimal 4-chord progression.
     
-    All cost components are normalized to 0-1 range:
-    - Voice Leading: 0 = smooth (no movement), 1 = jumpy (max movement)
-    - Tension: (roughness + distance) / 2, matched against target curve
+    Scoring based on "resolution efficiency":
+    - First chord: Match tension directly to target[0]
+    - Subsequent chords: Match CHANGE in tension to target change
+      - Resolution strength = |Δtension| / voice_leading_distance
+      - Rewards achieving large tension changes with minimal voice movement
     
     Args:
         home_root: Root note of home key (0=C, 1=C#, etc.)
         target_curve: Target tension curve [t1, t2, t3, t4]
-        voice_weight: Weight for voice leading (0 = ignore, higher = prefer smooth)
-        tension_weight: Weight for tension matching (0 = ignore, higher = match target curve)
+        voice_weight: Weight for resolution efficiency (higher = prefer efficient resolutions)
+        tension_weight: Weight for tension change matching (higher = match target changes)
         temperature: Randomness factor (0.0 = deterministic, higher = more random)
-                     Adds jitter to scores for stochastic selection.
     
     Returns:
         Tuple of (best_path, best_score)
@@ -256,11 +257,19 @@ def brute_force_optimize(
     # Build chord database (with roughness, distance, and tension pre-computed)
     chords = build_chord_database(home_root)
     
+    # Pre-compute target tension CHANGES
+    target_changes = []
+    for i in range(1, len(target_curve)):
+        target_changes.append(target_curve[i] - target_curve[i-1])
+    
     best_path = None
     best_score = float('inf')
     
     # For temperature-based selection, collect all candidates
     all_candidates = []
+    
+    # Small epsilon to avoid division by zero
+    EPSILON = 0.01
     
     # Brute force: 4 nested loops for all chords (no fixed first chord)
     for c1 in chords:
@@ -278,26 +287,48 @@ def brute_force_optimize(
                         continue
                     path = [c1, c2, c3, c4]
                     
-                    # Calculate tension cost (how well we match target curve)
-                    # Tension = (roughness + distance) / 2, already computed
-                    tension_cost = 0.0
-                    for i, chord in enumerate(path):
-                        tension_cost += abs(target_curve[i] - chord["tension"])
-                    # Normalize: max diff per chord is 1.0, 4 chords = max 4.0
-                    tension_cost = tension_cost / 4.0
+                    # === FIRST CHORD: Match tension directly ===
+                    first_chord_cost = abs(target_curve[0] - path[0]["tension"])
                     
-                    # Calculate voice leading cost (average movement between chords)
-                    # Already normalized to 0-1 per transition
-                    voice_cost = 0.0
-                    for i in range(len(path) - 1):
-                        voice_cost += voice_leading_cost(path[i]["notes"], path[i+1]["notes"])
-                    # Normalize: 3 transitions, each 0-1
-                    voice_cost = voice_cost / 3.0
+                    # === SUBSEQUENT CHORDS: Match tension CHANGES ===
+                    tension_change_cost = 0.0
+                    resolution_efficiency_bonus = 0.0
                     
-                    # Total score with weights (all components are 0-1)
+                    for i in range(1, len(path)):
+                        # Actual tension change
+                        actual_change = path[i]["tension"] - path[i-1]["tension"]
+                        target_change = target_changes[i-1]
+                        
+                        # Cost: how far off is our tension change from target?
+                        tension_change_cost += abs(actual_change - target_change)
+                        
+                        # Voice leading distance for this transition
+                        voice_dist = voice_leading_cost(path[i-1]["notes"], path[i]["notes"])
+                        
+                        # Resolution efficiency = |Δtension| / (voice_distance + epsilon)
+                        # Higher is better (more tension change per semitone)
+                        # We want to MAXIMIZE this, so we'll subtract it from cost
+                        # or equivalently, add it as a bonus (negative cost)
+                        efficiency = abs(actual_change) / (voice_dist + EPSILON)
+                        resolution_efficiency_bonus += efficiency
+                    
+                    # Normalize costs
+                    # First chord cost: 0-1 range
+                    # Tension change cost: 3 transitions, each can differ by up to 2.0 (from -1 to +1)
+                    # But typically much smaller, normalize by 3
+                    tension_change_cost = tension_change_cost / 3.0
+                    
+                    # Efficiency bonus: higher = better, so we negate it
+                    # Normalize: max efficiency per step is ~1.0/0.01 = 100 if no movement
+                    # But realistically it's around 0-10, so divide by ~10 to get 0-1 range
+                    # Then negate so lower score = better
+                    efficiency_cost = -resolution_efficiency_bonus / 10.0
+                    
+                    # Total score with weights
                     base_score = (
-                        (tension_cost * tension_weight) +
-                        (voice_cost * voice_weight)
+                        (first_chord_cost * tension_weight) +
+                        (tension_change_cost * tension_weight) +
+                        (efficiency_cost * voice_weight)
                     )
                     
                     if temperature > 0:
@@ -327,35 +358,54 @@ def print_progression(path: List[Dict], target_curve: List[float]):
     
     print("\nTarget Tension Curve:", target_curve)
     print("Tension = (Roughness + Distance) / 2")
+    
+    # Compute target changes
+    target_changes = [target_curve[i] - target_curve[i-1] for i in range(1, len(target_curve))]
+    print("Target Tension Changes:", [f"{c:+.3f}" for c in target_changes])
+    
     print("\nBest Path Found:")
     print("-" * 70)
     
+    EPSILON = 0.01
     result_strings = []
-    total_diff = 0.0
-    for i, chord in enumerate(path):
-        tension = chord["tension"]
-        distance = chord["distance"]
-        roughness = chord["roughness"]
-        target = target_curve[i]
-        diff = abs(target - tension)
-        total_diff += diff
-        result_strings.append(f'"{chord["name"]} (T: {tension:.2f})"')
-        print(f"  Step {i+1}: {chord['name']:8s} | Tension: {tension:.2f} | Target: {target:.2f} | Diff: {diff:.2f} | (R:{roughness:.2f} + D:{distance:.2f})/2")
+    
+    # First chord: match tension directly
+    chord = path[0]
+    tension = chord["tension"]
+    target = target_curve[0]
+    diff = abs(target - tension)
+    result_strings.append(f'"{chord["name"]} (T: {tension:.2f})"')
+    print(f"  Step 1: {chord['name']:8s} | Tension: {tension:.3f} | Target: {target:.3f} | Diff: {diff:.3f}")
+    
+    # Subsequent chords: show tension change and resolution efficiency
+    print("-" * 70)
+    print("  Transitions (matching tension CHANGES):")
+    total_change_diff = 0.0
+    total_efficiency = 0.0
+    
+    for i in range(1, len(path)):
+        chord = path[i]
+        prev_chord = path[i-1]
+        
+        actual_change = chord["tension"] - prev_chord["tension"]
+        target_change = target_changes[i-1]
+        change_diff = abs(actual_change - target_change)
+        total_change_diff += change_diff
+        
+        voice_dist = voice_leading_cost(prev_chord["notes"], chord["notes"])
+        efficiency = abs(actual_change) / (voice_dist + EPSILON)
+        total_efficiency += efficiency
+        
+        result_strings.append(f'"{chord["name"]} (T: {chord["tension"]:.2f})"')
+        print(f"    {prev_chord['name']:8s} -> {chord['name']:8s} | "
+              f"ΔTension: {actual_change:+.3f} (target: {target_change:+.3f}, diff: {change_diff:.3f}) | "
+              f"Voice: {voice_dist:.3f} | Efficiency: {efficiency:.2f}")
     
     print("-" * 70)
-    print(f"  Average tension diff: {total_diff / 4.0:.3f}")
+    print(f"  Avg tension change diff: {total_change_diff / 3.0:.3f}")
+    print(f"  Total resolution efficiency: {total_efficiency:.2f}")
     print(f"\nFormatted Output:")
     print(f"  [{', '.join(result_strings)}]")
-    
-    # Voice leading analysis
-    print("\nVoice Leading (normalized 0-1, lower = smoother):")
-    total_movement = 0
-    for i in range(len(path) - 1):
-        movement = voice_leading_cost(path[i]["notes"], path[i+1]["notes"])
-        total_movement += movement
-        print(f"  {path[i]['name']} -> {path[i+1]['name']}: {movement:.3f}")
-    avg_movement = total_movement / 3.0
-    print(f"  Average voice leading cost: {avg_movement:.3f}")
 
 
 def print_chord_tensions(home_root: int):
@@ -392,19 +442,21 @@ def main():
         help="Home root note (0=C, 1=C#, 2=D, etc.). Default: 0 (C)"
     )
     parser.add_argument(
-        "--curve", type=float, nargs=4, default=[0.39, 0.46, 0.64, 0.39],
-        help="Target tension curve (4 values, 0-1). Tension = (roughness + distance) / 2. Default: 0.4 0.8 0.6 0.0"
+        "--curve", type=float, nargs=4, default=[0.39, 0.46, 0.65, 0.39],
+
+        # "--curve", type=float, nargs=4, default=[0.386, 0.4571, 0.644, 0.386],
+        help="Target tension curve (4 values, 0-1). Default matches C-F-G-C: [0.386, 0.4571, 0.644, 0.386]"
     )
     parser.add_argument(
-        "--voice-weight", type=float, default=0.5,
-        help="Weight for voice leading: 0=ignore, higher=prefer smooth over jumpy. Default: 1.0"
+        "--voice-weight", type=float, default=0.0,
+        help="Weight for resolution efficiency: higher=prefer large tension changes with small voice movement. Default: 0.5"
     )
     parser.add_argument(
         "--tension-weight", type=float, default=1,
-        help="Weight for tension matching: 0=ignore, higher=match target curve. Default: 1.0"
+        help="Weight for tension change matching: higher=match target tension changes. Default: 1.0"
     )
     parser.add_argument(
-        "--temperature", type=float, default=0,
+        "--temperature", type=float, default=0.05,
         help="Randomness/jitter factor. 0.0 = deterministic, higher = more random. Default: 0.0"
     )
     parser.add_argument(
