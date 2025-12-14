@@ -1,6 +1,7 @@
 "use client";
-import React, { useEffect, useRef, useState } from "react";
-import { playChordFromPitchClass, playNoteFromPitchClass, playIntervalFromPitchClasses, playNotesFromPitchClasses, resumeAudioIfNeeded } from "./audio";
+import React, { useEffect, useRef, useState, useCallback } from "react";
+import { playNoteFromPitchClass, playIntervalFromPitchClasses, playNotesFromPitchClasses, resumeAudioIfNeeded } from "./audio";
+import ChordProgressionPanel from "./ChordProgressionPanel";
 
 // Simple Tonnetz-like infinite lattice visualization.
 // Each lattice node maps to a pitch class: pitch = (u*7 + v*4) mod 12
@@ -28,6 +29,16 @@ export default function Tonnetz() {
 
     // interaction
     const dragRef = useRef<{ down: boolean; sx: number; sy: number } | null>(null);
+
+    // chord progression highlight state (controlled by ChordProgressionPanel)
+    const [highlightedChord, setHighlightedChord] = useState<string | null>(null);
+    const highlightedChordRef = useRef(highlightedChord);
+    highlightedChordRef.current = highlightedChord;
+
+    // Callback for chord progression panel
+    const handleChordChange = useCallback((chordKey: string | null) => {
+        setHighlightedChord(chordKey);
+    }, []);
 
     useEffect(() => {
         const canvas = canvasRef.current!;
@@ -109,6 +120,78 @@ export default function Tonnetz() {
                 }
             }
 
+            // Helper to get triangle key (sorted pitch classes as string)
+            const getTriangleKey = (pcs: number[]) => [...pcs].sort((a, b) => a - b).join(',');
+
+            // Draw highlighted triangles
+            const highlightedKey = highlightedChordRef.current;
+            if (highlightedKey) {
+                for (let u = umin; u <= umax; u++) {
+                    for (let v = vmin; v <= vmax; v++) {
+                        // Check both triangles in each unit cell
+                        // Triangle 1: (u,v), (u+1,v), (u,v+1)
+                        const tri1Verts = [
+                            { u, v },
+                            { u: u + 1, v },
+                            { u, v: v + 1 }
+                        ];
+                        const tri1Pcs = tri1Verts.map(p => pitchClassForCoords(p.u, p.v));
+                        const tri1Key = getTriangleKey(tri1Pcs);
+
+                        if (tri1Key === highlightedKey) {
+                            const pts = tri1Verts.map(p => ({
+                                x: w / 2 + ox + p.u * a1.x + p.v * a2.x,
+                                y: h / 2 + oy + p.u * a1.y + p.v * a2.y,
+                            }));
+                            ctx.save();
+                            ctx.beginPath();
+                            ctx.moveTo(pts[0].x, pts[0].y);
+                            ctx.lineTo(pts[1].x, pts[1].y);
+                            ctx.lineTo(pts[2].x, pts[2].y);
+                            ctx.closePath();
+                            ctx.fillStyle = 'rgba(99, 102, 241, 0.4)';
+                            ctx.shadowColor = 'rgba(99, 102, 241, 0.8)';
+                            ctx.shadowBlur = 20 * s;
+                            ctx.fill();
+                            ctx.strokeStyle = 'rgba(99, 102, 241, 0.9)';
+                            ctx.lineWidth = Math.max(2, 3 * s);
+                            ctx.stroke();
+                            ctx.restore();
+                        }
+
+                        // Triangle 2: (u+1,v+1), (u+1,v), (u,v+1)
+                        const tri2Verts = [
+                            { u: u + 1, v: v + 1 },
+                            { u: u + 1, v },
+                            { u, v: v + 1 }
+                        ];
+                        const tri2Pcs = tri2Verts.map(p => pitchClassForCoords(p.u, p.v));
+                        const tri2Key = getTriangleKey(tri2Pcs);
+
+                        if (tri2Key === highlightedKey) {
+                            const pts = tri2Verts.map(p => ({
+                                x: w / 2 + ox + p.u * a1.x + p.v * a2.x,
+                                y: h / 2 + oy + p.u * a1.y + p.v * a2.y,
+                            }));
+                            ctx.save();
+                            ctx.beginPath();
+                            ctx.moveTo(pts[0].x, pts[0].y);
+                            ctx.lineTo(pts[1].x, pts[1].y);
+                            ctx.lineTo(pts[2].x, pts[2].y);
+                            ctx.closePath();
+                            ctx.fillStyle = 'rgba(99, 102, 241, 0.4)';
+                            ctx.shadowColor = 'rgba(99, 102, 241, 0.8)';
+                            ctx.shadowBlur = 20 * s;
+                            ctx.fill();
+                            ctx.strokeStyle = 'rgba(99, 102, 241, 0.9)';
+                            ctx.lineWidth = Math.max(2, 3 * s);
+                            ctx.stroke();
+                            ctx.restore();
+                        }
+                    }
+                }
+            }
+
             // draw nodes
             for (let u = umin; u <= umax; u++) {
                 for (let v = vmin; v <= vmax; v++) {
@@ -116,10 +199,12 @@ export default function Tonnetz() {
                     const y = h / 2 + oy + u * a1.y + v * a2.y;
                     const pc = pitchClassForCoords(u, v);
                     const hue = (pc / 12) * 360;
+
                     ctx.fillStyle = `hsl(${hue}deg 70% 45%)`;
                     ctx.beginPath();
                     ctx.arc(x, y, Math.max(6, 8 * s), 0, Math.PI * 2);
                     ctx.fill();
+
                     // label
                     ctx.font = `${8 * Math.max(1, s)}px sans-serif`;
                     ctx.fillStyle = 'rgba(255,255,255,0.98)';
@@ -310,8 +395,10 @@ export default function Tonnetz() {
                 style={{ width: '100%', height: '100%', display: 'block', touchAction: 'none', cursor: 'grab' }}
             />
             <div style={{ position: 'fixed', left: 12, top: 12, background: 'rgba(0,0,0,0.6)', color: 'white', padding: '6px 8px', borderRadius: 6, fontSize: 12, zIndex: 1000 }}>
-                Click a node to play a triad. Drag to pan. Scroll to zoom.
+                Click a node to play a note. Click an edge for interval. Click inside triangle for chord. Drag to pan. Scroll to zoom.
             </div>
+
+            <ChordProgressionPanel onChordChange={handleChordChange} />
         </div>
     );
 }

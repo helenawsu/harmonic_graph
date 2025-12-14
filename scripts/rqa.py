@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Compute Percent Recurrence (%RQA) for common triads and 7th chords.
+Compute Percent Recurrence (%RQA) for musical intervals.
 
 Following methodology from Trulla et al. (2018) "Computational Approach to Musical Consonance":
 - Pure sinusoidal tones (no harmonics)
@@ -12,7 +12,7 @@ Following methodology from Trulla et al. (2018) "Computational Approach to Music
 
 RQA parameters from paper: window=480, shift=48, emb_dim=5, delay=3
 
-Outputs a CSV at results/rqa_chords.csv with mean and std of %Recurrence across windows for each chord.
+Outputs a CSV at results/rqa_intervals.csv with mean and std of %Recurrence across windows for each interval.
 """
 import os
 import argparse
@@ -21,69 +21,22 @@ from typing import List, Tuple
 import numpy as np
 
 
-# Just intonation ratios (as used in paper)
-JUST_RATIOS = {
-    "unison": 1/1,      # 1.0
-    "octave": 2/1,      # 2.0
-    "fifth": 3/2,       # 1.5
-    "fourth": 4/3,      # 1.333...
-    "major6th": 5/3,    # 1.666...
-    "major3rd": 5/4,    # 1.25
-    "minor3rd": 6/5,    # 1.2
-    "minor6th": 8/5,    # 1.6
-    "minor7th": 9/5,    # 1.8
-    "major7th": 15/8,   # 1.875
+# Just intonation ratios for intervals (as used in paper)
+JUST_INTERVALS = {
+    "unison": [1/1, 1/1],           # 1:1
+    "octave": [1/1, 2/1],           # 1:2
+    "fifth": [1/1, 3/2],            # 2:3
+    "fourth": [1/1, 4/3],           # 3:4
+    "major6th": [1/1, 5/3],         # 3:5
+    "major3rd": [1/1, 5/4],         # 4:5
+    "minor3rd": [1/1, 6/5],         # 5:6
+    "minor6th": [1/1, 8/5],         # 5:8
+    "minor7th": [1/1, 9/5],         # 5:9
+    "major7th": [1/1, 15/8],        # 8:15
+    "tritone": [1/1, 45/32],        # 32:45
+    "minor2nd": [1/1, 16/15],       # 15:16
+    "major2nd": [1/1, 9/8],         # 8:9
 }
-
-# Semitone-based definitions (equal temperament) - kept for reference
-CHORD_DEFS = {
-    # intervals - unison must be first for normalization
-    "unison": [0, 0],
-    "octave": [0, 12],
-    "fifth": [0, 7],
-    "fourth": [0, 5],
-    "major6th": [0, 9],
-    "major3rd": [0, 4], 
-    "minor3rd": [0, 3],
-    "minor6th": [0, 8],
-    "minor7th": [0, 10],
-    "major7th": [0, 11],
-    # triads
-    # "major": [0, 4, 7],
-    # "minor": [0, 3, 7],
-    # "diminished": [0, 3, 6],
-    # "augmented": [0, 4, 8],
-    # # sevenths
-    # "major7": [0, 4, 7, 11],
-    # "dominant7": [0, 4, 7, 10],
-    # "minor7": [0, 3, 7, 10],
-    # "half-diminished7": [0, 3, 6, 10],
-    # "diminished7": [0, 3, 6, 9],
-}
-
-
-def semitone_to_freq(root_freq: float, semitone_offset: float) -> float:
-    return root_freq * (2.0 ** (semitone_offset / 12.0))
-
-
-def generate_note(freq: float, duration: float, sr: int, harmonics: int = 6) -> np.ndarray:
-    t = np.arange(0, duration, 1.0 / sr)
-    sig = np.zeros_like(t)
-    for h in range(1, harmonics + 1):
-        sig += (1.0 / h) * np.sin(2.0 * math.pi * freq * h * t)
-    # normalize
-    sig = sig / np.max(np.abs(sig))
-    return sig
-
-
-def generate_chord(semitones: List[int], root_freq: float, duration: float, sr: int) -> np.ndarray:
-    parts = []
-    for st in semitones:
-        f = semitone_to_freq(root_freq, st)
-        parts.append(generate_note(f, duration, sr))
-    chord = np.sum(parts, axis=0)
-    chord = chord / np.max(np.abs(chord))
-    return chord
 
 
 def time_delay_embed(x: np.ndarray, emb_dim: int, delay: int) -> np.ndarray:
@@ -182,7 +135,7 @@ def sliding_rqa(
     return np.array(results)
 
 
-def analyze_chords(
+def analyze_intervals(
     root_freq: float = 400.0,  # Paper uses 400 Hz
     sr: int = 8000,
     duration: float = 10.0,
@@ -194,38 +147,24 @@ def analyze_chords(
     eps_factor: float = 0.1,
     eps_method: str = "average",
     eps_percentile: float = 5.0,
-    harmonics: int = 1,
-    use_just_intonation: bool = True,
 ) -> List[Tuple[str, float, float, float, float, float, float, float, int]]:
-    """Return list of tuples per chord:
+    """Return list of tuples per interval:
     (name, mean_frac, mean_percent, normalized_percent, p5_percent, median_percent, p95_percent, std_percent, n_windows)
     
     normalized_percent is scaled so that unison = 100%
     """
     raw_results = []
     
-    intervals = JUST_RATIOS if use_just_intonation else CHORD_DEFS
-    
-    for name, interval_def in intervals.items():
-        print("Analyzing interval:", name)
+    for name, interval_ratios in JUST_INTERVALS.items():
+        print("Analyzing:", name)
         
-        if use_just_intonation:
-            # interval_def is a ratio
-            ratio = interval_def
-            f1 = root_freq
-            f2 = root_freq * ratio
-            t = np.arange(0, duration, 1.0 / sr)
-            # Generate two pure tones and sum them
-            sig1 = np.sin(2.0 * math.pi * f1 * t)
-            sig2 = np.sin(2.0 * math.pi * f2 * t)
-            sig = sig1 + sig2
-        else:
-            # interval_def is list of semitones
-            parts = []
-            for st in interval_def:
-                f = semitone_to_freq(root_freq, st)
-                parts.append(generate_note(f, duration, sr, harmonics=harmonics))
-            sig = np.sum(parts, axis=0)
+        t = np.arange(0, duration, 1.0 / sr)
+        
+        # interval_ratios is a list of frequency ratios [1/1, ratio]
+        sig = np.zeros_like(t)
+        for ratio in interval_ratios:
+            f = root_freq * ratio
+            sig += np.sin(2.0 * math.pi * f * t)
         
         sig = sig / np.max(np.abs(sig))
 
@@ -257,7 +196,8 @@ def analyze_chords(
             break
     
     if unison_frac is None or unison_frac == 0:
-        unison_frac = 1.0  # fallback to avoid division by zero
+        # If no unison found, use the first chord as reference
+        unison_frac = raw_results[0][1] if raw_results else 1.0
     
     # Build output with normalized percentage
     out = []
@@ -280,13 +220,12 @@ def main():
     parser.add_argument("--eps-factor", type=float, default=0.1)
     parser.add_argument("--eps-method", type=str, default="average", choices=["average", "factor", "percentile"], help="Method to choose eps: 'average' (paper), 'factor', or 'percentile'")
     parser.add_argument("--eps-percentile", type=float, default=5.0, help="Percentile to use for eps when --eps-method percentile (e.g. 5)")
-    parser.add_argument("--harmonics", type=int, default=1, help="Number of harmonics/partials per note (1=pure tone as in paper)")
     parser.add_argument("--root", type=float, default=400.0, help="Root frequency in Hz (paper: 400)")
-    parser.add_argument("--out", type=str, default="results/rqa_chords.csv")
+    parser.add_argument("--out", type=str, default="results/rqa_intervals.csv")
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    results = analyze_chords(
+    results = analyze_intervals(
         root_freq=args.root,
         sr=args.sr,
         duration=args.duration,
@@ -298,18 +237,17 @@ def main():
         eps_factor=args.eps_factor,
         eps_method=args.eps_method,
         eps_percentile=args.eps_percentile,
-        harmonics=args.harmonics,
     )
 
     # write CSV header for expanded stats (now includes normalized_percent)
     with open(args.out, "w") as f:
-        f.write("chord,mean_frac,mean_percent,normalized_percent,p5_percent,median_percent,p95_percent,std_percent,n_windows\n")
+        f.write("interval,mean_frac,mean_percent,normalized_percent,p5_percent,median_percent,p95_percent,std_percent,n_windows\n")
         for name, mean_frac, mean_perc, norm_perc, p5, median_perc, p95, std_perc, n in results:
             f.write(f"{name},{mean_frac:.6f},{mean_perc:.6f},{norm_perc:.1f},{p5:.6f},{median_perc:.6f},{p95:.6f},{std_perc:.6f},{n}\n")
 
     # print brief summary with normalized values
     print("%RQA results written to:", args.out)
-    print(f"{'Chord':15s} | {'Normalized':>10s} | {'Raw %':>8s}")
+    print(f"{'Interval':15s} | {'Normalized':>10s} | {'Raw %':>8s}")
     print("-" * 40)
     for name, mean_frac, mean_perc, norm_perc, p5, median_perc, p95, std_perc, n in results:
         print(f"{name:15s} | {norm_perc:>10.1f} | {mean_perc:>8.3f}%")
