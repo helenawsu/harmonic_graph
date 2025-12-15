@@ -1,6 +1,5 @@
-import Tonnetz from "./tonnetz/Tonnetz";
+import ChordProgressionGenerator from "./components/ChordProgressionGenerator";
 
 export default function Home() {
-  // Render only the Tonnetz so it can occupy the full viewport.
-  return <Tonnetz />;
+  return <ChordProgressionGenerator />;
 }

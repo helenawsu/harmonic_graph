@@ -133,13 +133,14 @@ def get_chord_notes(root: int, chord_type: str) -> List[int]:
 
 def voice_leading_cost(chord1_notes: List[int], chord2_notes: List[int]) -> float:
     """
-    Calculates the 'Smart Pianist' distance, normalized to 0-1.
+    Calculates the 'Smart Pianist' distance in raw semitones.
     Assumes the player finds the closest inversion (minimized movement).
     
     Returns:
-        Normalized voice leading cost (0.0 = no movement, 1.0 = maximum movement)
-        Maximum possible movement for a triad is 18 semitones (3 notes × 6 semitones max each)
+        Total semitone movement (not normalized)
     """
+    import math
+    
     # 1. Convert everything to Pitch Classes (0-11)
     pc1 = [n % 12 for n in chord1_notes]
     pc2 = [n % 12 for n in chord2_notes]
@@ -176,12 +177,22 @@ def voice_leading_cost(chord1_notes: List[int], chord2_notes: List[int]) -> floa
         if best_target_idx != -1:
             remaining_targets.pop(best_target_idx)
     
-    # Normalize to 0-1 range
-    # Maximum movement for a triad: 3 notes × 6 semitones = 18
-    max_movement = len(pc1) * 6
-    normalized = total_movement / max_movement if max_movement > 0 else 0.0
+    return total_movement
+
+
+def soft_voice_leading_denominator(voice_distance: float) -> float:
+    """
+    Soft denominator for tension rate calculation.
+    Uses logarithmic scaling to avoid punishing larger voice movements too hard.
     
-    return max(0.0, min(1.0, normalized))
+    Formula: (log2(voice_distance) + 1) / 4
+    
+    Result: Average denominator is around 1, so rates are more intuitive.
+    """
+    import math
+    if voice_distance < 1e-5:
+        return 1.0
+    return (math.log2(voice_distance) + 1) / 4
 
 
 def format_chord_name(root: int, chord_type: str) -> str:
@@ -189,6 +200,43 @@ def format_chord_name(root: int, chord_type: str) -> str:
     note = NOTE_NAMES[root % 12]
     type_abbrev = "Maj" if chord_type == "Major" else "min"
     return f"{note}_{type_abbrev}"
+
+
+def get_roman_numeral(root: int, chord_type: str, home_root: int) -> str:
+    """
+    Convert chord to Roman numeral notation relative to home key.
+    
+    Major chords: I, II, III, IV, V, VI, VII (uppercase)
+    Minor chords: i, ii, iii, iv, v, vi, vii (lowercase)
+    
+    Accidentals shown with ♭ or ♯ prefix.
+    """
+    # Scale degrees in semitones from root
+    scale_degrees = {
+        0: "I",    # Unison
+        1: "♭II",  # Minor 2nd
+        2: "II",   # Major 2nd
+        3: "♭III", # Minor 3rd
+        4: "III",  # Major 3rd
+        5: "IV",   # Perfect 4th
+        6: "♯IV",  # Tritone (could also be ♭V)
+        7: "V",    # Perfect 5th
+        8: "♭VI",  # Minor 6th
+        9: "VI",   # Major 6th
+        10: "♭VII", # Minor 7th
+        11: "VII",  # Major 7th
+    }
+    
+    # Calculate interval from home root
+    interval = (root - home_root) % 12
+    
+    roman = scale_degrees[interval]
+    
+    # Lowercase for minor chords
+    if chord_type == "minor":
+        roman = roman.lower()
+    
+    return roman
 
 
 def build_chord_database(home_root: int) -> List[Dict]:
@@ -202,9 +250,10 @@ def build_chord_database(home_root: int) -> List[Dict]:
         for chord_type in CHORD_TYPES:
             roughness = get_roughness(chord_type)
             distance = get_spectral_distance(root, chord_type, home_root)
-            tension = (roughness + distance) / 2.0
+            tension = distance
             notes = get_chord_notes(root, chord_type)
             name = format_chord_name(root, chord_type)
+            roman = get_roman_numeral(root, chord_type, home_root)
             chords.append({
                 "root": root,
                 "type": chord_type,
@@ -213,6 +262,7 @@ def build_chord_database(home_root: int) -> List[Dict]:
                 "tension": tension,
                 "notes": notes,
                 "name": name,
+                "roman": roman,
             })
     return chords
 
@@ -235,17 +285,16 @@ def brute_force_optimize(
     """
     Brute force search for optimal 4-chord progression.
     
-    Scoring based on "resolution efficiency":
-    - First chord: Match tension directly to target[0]
-    - Subsequent chords: Match CHANGE in tension to target change
-      - Resolution strength = |Δtension| / voice_leading_distance
-      - Rewards achieving large tension changes with minimal voice movement
+    Solves for: ΔTension / ΔVoiceLeading ≈ Target Slope
+    
+    The algorithm matches the RATE of tension change per semitone of voice movement
+    to the target slope at each step.
     
     Args:
         home_root: Root note of home key (0=C, 1=C#, etc.)
         target_curve: Target tension curve [t1, t2, t3, t4]
-        voice_weight: Weight for resolution efficiency (higher = prefer efficient resolutions)
-        tension_weight: Weight for tension change matching (higher = match target changes)
+        voice_weight: (unused in rate-matching mode)
+        tension_weight: (unused in rate-matching mode)
         temperature: Randomness factor (0.0 = deterministic, higher = more random)
     
     Returns:
@@ -257,10 +306,9 @@ def brute_force_optimize(
     # Build chord database (with roughness, distance, and tension pre-computed)
     chords = build_chord_database(home_root)
     
-    # Pre-compute target tension CHANGES
-    target_changes = []
-    for i in range(1, len(target_curve)):
-        target_changes.append(target_curve[i] - target_curve[i-1])
+    # Pre-calculate the slopes of the target curve
+    # Example: [0, 0.4, 0.8, 0] -> Slopes: [+0.4, +0.4, -0.8]
+    target_slopes = [target_curve[i] - target_curve[i-1] for i in range(1, len(target_curve))]
     
     best_path = None
     best_score = float('inf')
@@ -268,78 +316,52 @@ def brute_force_optimize(
     # For temperature-based selection, collect all candidates
     all_candidates = []
     
-    # Small epsilon to avoid division by zero
-    EPSILON = 0.01
-    
-    # Brute force: 4 nested loops for all chords (no fixed first chord)
+    # Brute force: 4 nested loops for all chords
     for c1 in chords:
         for c2 in chords:
-            # Skip if same chord as previous
             if c2["name"] == c1["name"]:
                 continue
             for c3 in chords:
-                # Skip if same chord as previous
                 if c3["name"] == c2["name"]:
                     continue
                 for c4 in chords:
-                    # Skip if same chord as previous
                     if c4["name"] == c3["name"]:
                         continue
+                    
                     path = [c1, c2, c3, c4]
+                    path_cost = 0.0
                     
-                    # === FIRST CHORD: Match tension directly ===
-                    first_chord_cost = abs(target_curve[0] - path[0]["tension"])
-                    
-                    # === SUBSEQUENT CHORDS: Match tension CHANGES ===
-                    tension_change_cost = 0.0
-                    resolution_efficiency_bonus = 0.0
-                    
+                    # Iterate through the transitions (Steps 1, 2, 3)
                     for i in range(1, len(path)):
-                        # Actual tension change
-                        actual_change = path[i]["tension"] - path[i-1]["tension"]
-                        target_change = target_changes[i-1]
                         
-                        # Cost: how far off is our tension change from target?
-                        tension_change_cost += abs(actual_change - target_change)
+                        # A. Get the Target Slope for this specific step
+                        target_slope = target_slopes[i-1]
                         
-                        # Voice leading distance for this transition
-                        voice_dist = voice_leading_cost(path[i-1]["notes"], path[i]["notes"])
+                        # B. Calculate Actual Change in Tension
+                        d_tension = path[i]["tension"] - path[i-1]["tension"]
                         
-                        # Resolution efficiency = |Δtension| / (voice_distance + epsilon)
-                        # Higher is better (more tension change per semitone)
-                        # We want to MAXIMIZE this, so we'll subtract it from cost
-                        # or equivalently, add it as a bonus (negative cost)
-                        efficiency = abs(actual_change) / (voice_dist + EPSILON)
-                        resolution_efficiency_bonus += efficiency
+                        # C. Calculate Voice Leading Distance (in semitones)
+                        d_voice = voice_leading_cost(path[i-1]["notes"], path[i]["notes"])
+                        
+                        # D. Use soft denominator to avoid punishing larger moves too hard
+                        # Formula: log2(voice_distance + 1) + 1
+                        soft_denom = soft_voice_leading_denominator(d_voice)
+                        
+                        # E. Calculate Actual Rate with soft denominator
+                        # "How much tension did we gain per unit of (soft) voice movement?"
+                        actual_rate = d_tension / soft_denom
+                        
+                        # F. Add penalty for deviation from target slope
+                        path_cost += abs(actual_rate - target_slope)
                     
-                    # Normalize costs
-                    # First chord cost: 0-1 range
-                    # Tension change cost: 3 transitions, each can differ by up to 2.0 (from -1 to +1)
-                    # But typically much smaller, normalize by 3
-                    tension_change_cost = tension_change_cost / 3.0
-                    
-                    # Efficiency bonus: higher = better, so we negate it
-                    # Normalize: max efficiency per step is ~1.0/0.01 = 100 if no movement
-                    # But realistically it's around 0-10, so divide by ~10 to get 0-1 range
-                    # Then negate so lower score = better
-                    efficiency_cost = -resolution_efficiency_bonus / 10.0
-                    
-                    # Total score with weights
-                    base_score = (
-                        (first_chord_cost * tension_weight) +
-                        (tension_change_cost * tension_weight) +
-                        (efficiency_cost * voice_weight)
-                    )
-                    
+                    # F. Check if this is the best "flow" so far
                     if temperature > 0:
-                        # Add jitter for stochastic selection
                         jitter = random.gauss(0, temperature)
-                        jittered_score = base_score + jitter
-                        all_candidates.append((path, base_score, jittered_score))
+                        jittered_score = path_cost + jitter
+                        all_candidates.append((path, path_cost, jittered_score))
                     else:
-                        # Deterministic: just track best
-                        if base_score < best_score:
-                            best_score = base_score
+                        if path_cost < best_score:
+                            best_score = path_cost
                             best_path = path
     
     if temperature > 0:
@@ -351,7 +373,7 @@ def brute_force_optimize(
 
 
 def print_progression(path: List[Dict], target_curve: List[float]):
-    """Print the chord progression with details."""
+    """Print the chord progression with rate-matching details."""
     print("\n" + "=" * 70)
     print("OPTIMAL CHORD PROGRESSION")
     print("=" * 70)
@@ -359,61 +381,59 @@ def print_progression(path: List[Dict], target_curve: List[float]):
     print("\nTarget Tension Curve:", target_curve)
     print("Tension = (Roughness + Distance) / 2")
     
-    # Compute target changes
-    target_changes = [target_curve[i] - target_curve[i-1] for i in range(1, len(target_curve))]
-    print("Target Tension Changes:", [f"{c:+.3f}" for c in target_changes])
+    # Compute target slopes
+    target_slopes = [target_curve[i] - target_curve[i-1] for i in range(1, len(target_curve))]
+    print("Target Slopes (ΔTension):", [f"{s:+.3f}" for s in target_slopes])
     
     print("\nBest Path Found:")
     print("-" * 70)
     
-    EPSILON = 0.01
     result_strings = []
+    roman_strings = []
     
-    # First chord: match tension directly
+    # First chord
     chord = path[0]
-    tension = chord["tension"]
-    target = target_curve[0]
-    diff = abs(target - tension)
-    result_strings.append(f'"{chord["name"]} (T: {tension:.2f})"')
-    print(f"  Step 1: {chord['name']:8s} | Tension: {tension:.3f} | Target: {target:.3f} | Diff: {diff:.3f}")
+    result_strings.append(f'"{chord["name"]} (T: {chord["tension"]:.2f})"')
+    roman_strings.append(chord["roman"])
+    print(f"  Step 1: {chord['roman']:8s} ({chord['name']:8s}) | Tension: {chord['tension']:.3f}")
     
-    # Subsequent chords: show tension change and resolution efficiency
+    # Transitions: show rate matching
     print("-" * 70)
-    print("  Transitions (matching tension CHANGES):")
-    total_change_diff = 0.0
-    total_efficiency = 0.0
+    print("  Transitions (using soft denominator: log2(ΔV + 1) + 1):")
+    total_rate_cost = 0.0
     
     for i in range(1, len(path)):
         chord = path[i]
         prev_chord = path[i-1]
         
-        actual_change = chord["tension"] - prev_chord["tension"]
-        target_change = target_changes[i-1]
-        change_diff = abs(actual_change - target_change)
-        total_change_diff += change_diff
-        
-        voice_dist = voice_leading_cost(prev_chord["notes"], chord["notes"])
-        efficiency = abs(actual_change) / (voice_dist + EPSILON)
-        total_efficiency += efficiency
+        target_slope = target_slopes[i-1]
+        d_tension = chord["tension"] - prev_chord["tension"]
+        d_voice = voice_leading_cost(prev_chord["notes"], chord["notes"])
+        soft_denom = soft_voice_leading_denominator(d_voice)
+        actual_rate = d_tension / soft_denom
+        rate_diff = abs(actual_rate - target_slope)
+        total_rate_cost += rate_diff
         
         result_strings.append(f'"{chord["name"]} (T: {chord["tension"]:.2f})"')
-        print(f"    {prev_chord['name']:8s} -> {chord['name']:8s} | "
-              f"ΔTension: {actual_change:+.3f} (target: {target_change:+.3f}, diff: {change_diff:.3f}) | "
-              f"Voice: {voice_dist:.3f} | Efficiency: {efficiency:.2f}")
+        roman_strings.append(chord["roman"])
+        print(f"    {prev_chord['roman']:8s} -> {chord['roman']:8s} | "
+              f"ΔT: {d_tension:+.3f} | ΔV: {d_voice:.0f} (soft: {soft_denom:.2f}) | "
+              f"Rate: {actual_rate:+.3f} (target: {target_slope:+.3f}, diff: {rate_diff:.3f})")
     
     print("-" * 70)
-    print(f"  Avg tension change diff: {total_change_diff / 3.0:.3f}")
-    print(f"  Total resolution efficiency: {total_efficiency:.2f}")
+    print(f"  Total rate cost: {total_rate_cost:.3f}")
+    print(f"\nProgression (Roman Numerals): {' - '.join(roman_strings)}")
+    print(f"Progression (Chord Names):    {' - '.join([c['name'] for c in path])}")
     print(f"\nFormatted Output:")
     print(f"  [{', '.join(result_strings)}]")
 
 
 def print_chord_tensions(home_root: int):
     """Print all chord properties for reference."""
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 70)
     print("CHORD PROPERTIES REFERENCE")
     print(f"Home Key: {NOTE_NAMES[home_root]}")
-    print("=" * 60)
+    print("=" * 70)
     print("\nAll values normalized to 0-1:")
     print("  - Tension = (Roughness + Distance) / 2")
     print("  - Roughness: 0 = consonant, 1 = dissonant")
@@ -424,11 +444,11 @@ def print_chord_tensions(home_root: int):
     # Sort by tension
     chords_sorted = sorted(chords, key=lambda c: c["tension"])
     
-    print(f"\n{'Chord':12s} | {'Tension':>8s} | {'Roughness':>10s} | {'Distance':>10s}")
-    print("-" * 50)
+    print(f"\n{'Roman':8s} | {'Chord':12s} | {'Tension':>8s} | {'Roughness':>10s} | {'Distance':>10s}")
+    print("-" * 60)
     
     for chord in chords_sorted:
-        print(f"{chord['name']:12s} | {chord['tension']:>8.3f} | {chord['roughness']:>10.3f} | {chord['distance']:>10.3f}")
+        print(f"{chord['roman']:8s} | {chord['name']:12s} | {chord['tension']:>8.3f} | {chord['roughness']:>10.3f} | {chord['distance']:>10.3f}")
 
 
 def main():
@@ -442,7 +462,7 @@ def main():
         help="Home root note (0=C, 1=C#, 2=D, etc.). Default: 0 (C)"
     )
     parser.add_argument(
-        "--curve", type=float, nargs=4, default=[0.39, 0.46, 0.65, 0.39],
+        "--curve", type=float, nargs=4, default=[0.0, 0.2, 0.65, -0.1],
 
         # "--curve", type=float, nargs=4, default=[0.386, 0.4571, 0.644, 0.386],
         help="Target tension curve (4 values, 0-1). Default matches C-F-G-C: [0.386, 0.4571, 0.644, 0.386]"
@@ -456,7 +476,7 @@ def main():
         help="Weight for tension change matching: higher=match target tension changes. Default: 1.0"
     )
     parser.add_argument(
-        "--temperature", type=float, default=0.05,
+        "--temperature", type=float, default=0.01,
         help="Randomness/jitter factor. 0.0 = deterministic, higher = more random. Default: 0.0"
     )
     parser.add_argument(
