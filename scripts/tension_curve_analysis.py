@@ -113,6 +113,65 @@ def get_chord_notes(chord: str) -> List[int]:
     return [base + interval for interval in intervals]
 
 
+def freq_to_continuous_semitone(freq: float) -> float:
+    """
+    Converts Hz to a continuous semitone scale (relative to MIDI 0).
+    Formula: 69 + 12 * log2(freq / 440)
+    
+    This allows handling microtones and non-standard tuning.
+    """
+    import math
+    if freq <= 0:
+        return 0
+    return 69 + 12 * math.log2(freq / 440.0)
+
+
+def voice_leading_cost_freq(chord1_freqs: List[float], chord2_freqs: List[float]) -> float:
+    """
+    Calculates voice leading distance for raw frequencies (Hz).
+    Handles microtones and non-standard tuning.
+    
+    Human hearing is logarithmic, so we convert Hz to continuous semitones
+    before calculating distance. This ensures a "Perfect 5th" jump costs
+    the same in bass as in treble.
+    
+    Returns:
+        Total semitone movement (as float, handles microtones)
+    """
+    import math
+    
+    # 1. Convert Hz to Continuous Semitones
+    pitch1 = [freq_to_continuous_semitone(f) for f in chord1_freqs]
+    pitch2 = [freq_to_continuous_semitone(f) for f in chord2_freqs]
+
+    # 2. Convert to "Pitch Class" (0.0 to 11.999...)
+    pc1 = [p % 12.0 for p in pitch1]
+    pc2 = [p % 12.0 for p in pitch2]
+
+    total_movement = 0.0
+    remaining_targets = pc2.copy()
+
+    # 3. Greedy Matching (adapted for float)
+    for p1 in pc1:
+        best_dist = 100.0
+        best_target_idx = -1
+
+        for i, p2 in enumerate(remaining_targets):
+            diff = abs(p1 - p2)
+            dist = min(diff, 12.0 - diff)
+
+            if dist < best_dist:
+                best_dist = dist
+                best_target_idx = i
+
+        total_movement += best_dist
+
+        if best_target_idx != -1:
+            remaining_targets.pop(best_target_idx)
+
+    return total_movement
+
+
 def voice_leading_cost(chord1_notes: List[int], chord2_notes: List[int]) -> float:
     """
     Calculates the 'Smart Pianist' distance in raw semitones.

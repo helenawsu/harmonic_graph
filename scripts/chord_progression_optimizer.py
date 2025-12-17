@@ -131,53 +131,123 @@ def get_chord_notes(root: int, chord_type: str) -> List[int]:
     return [base + interval for interval in intervals]
 
 
-def voice_leading_cost(chord1_notes: List[int], chord2_notes: List[int]) -> float:
+def midi_to_freq(midi_note: int) -> float:
+    """Convert MIDI note number to frequency in Hz."""
+    return 440.0 * (2 ** ((midi_note - 69) / 12))
+
+
+def freq_to_continuous_semitone(freq: float) -> float:
     """
-    Calculates the 'Smart Pianist' distance in raw semitones.
-    Assumes the player finds the closest inversion (minimized movement).
+    Converts Hz to a continuous semitone scale (relative to MIDI 0).
+    Formula: 69 + 12 * log2(freq / 440)
+    
+    This allows handling microtones and non-standard tuning.
+    """
+    import math
+    if freq <= 0:
+        return 0
+    return 69 + 12 * math.log2(freq / 440.0)
+
+
+def voice_leading_cost_freq(chord1_freqs: List[float], chord2_freqs: List[float]) -> float:
+    """
+    Calculates voice leading distance for raw frequencies (Hz).
+    Handles microtones and non-standard tuning.
+    
+    Human hearing is logarithmic, so we convert Hz to continuous semitones
+    before calculating distance. This ensures a "Perfect 5th" jump costs
+    the same in bass as in treble.
     
     Returns:
-        Total semitone movement (not normalized)
+        Total semitone movement (as float, handles microtones)
     """
     import math
     
-    # 1. Convert everything to Pitch Classes (0-11)
-    pc1 = [n % 12 for n in chord1_notes]
-    pc2 = [n % 12 for n in chord2_notes]
-    
-    # 2. Find the best mapping (Greedy approach works well for triads)
-    # We want to match every note in Chord A to the closest note in Chord B
-    
+    # 1. Convert Hz to Continuous Semitones
+    # This ensures that a "Perfect 5th" jump costs the same in Bass as in Treble.
+    # We use floating point numbers now, not integers.
+    pitch1 = [freq_to_continuous_semitone(f) for f in chord1_freqs]
+    pitch2 = [freq_to_continuous_semitone(f) for f in chord2_freqs]
+
+    # 2. Convert to "Pitch Class" (0.0 to 11.999...)
+    # We use modulo 12.0 to wrap everything into one octave
+    pc1 = [p % 12.0 for p in pitch1]
+    pc2 = [p % 12.0 for p in pitch2]
+
     total_movement = 0.0
-    
-    # We create a copy of pc2 so we can "consume" notes as we match them
-    # to avoid mapping two notes to the same destination if possible.
     remaining_targets = pc2.copy()
-    
-    for n1 in pc1:
-        # Find the closest note in the remaining targets
-        best_dist = 100
+
+    # 3. Greedy Matching (adapted for float)
+    for p1 in pc1:
+        best_dist = 100.0
         best_target_idx = -1
-        
-        for i, n2 in enumerate(remaining_targets):
-            # Calculate distance on the circle (0-6)
-            # e.g. Distance between 0 (C) and 11 (B) is 1, not 11.
-            diff = abs(n1 - n2)
-            dist = min(diff, 12 - diff)
+
+        for i, p2 in enumerate(remaining_targets):
+            # Calculate Circular Distance
+            diff = abs(p1 - p2)
             
+            # Shortest path on the circle (e.g. 0.1 to 11.9 is distance 0.2, not 11.8)
+            dist = min(diff, 12.0 - diff)
+
             if dist < best_dist:
                 best_dist = dist
                 best_target_idx = i
-        
-        # Add to total
+
         total_movement += best_dist
-        
-        # Remove the used target so other voices find their own path
-        # (If lists are different lengths, handle gracefully)
+
         if best_target_idx != -1:
             remaining_targets.pop(best_target_idx)
-    
+
     return total_movement
+
+
+# def voice_leading_cost(chord1_notes: List[int], chord2_notes: List[int]) -> float:
+#     """
+#     Calculates the 'Smart Pianist' distance in raw semitones.
+#     Assumes the player finds the closest inversion (minimized movement).
+#     
+#     Returns:
+#         Total semitone movement (not normalized)
+#     """
+#     import math
+#     
+#     # 1. Convert everything to Pitch Classes (0-11)
+#     pc1 = [n % 12 for n in chord1_notes]
+#     pc2 = [n % 12 for n in chord2_notes]
+#     
+#     # 2. Find the best mapping (Greedy approach works well for triads)
+#     # We want to match every note in Chord A to the closest note in Chord B
+#     
+#     total_movement = 0.0
+#     
+#     # We create a copy of pc2 so we can "consume" notes as we match them
+#     # to avoid mapping two notes to the same destination if possible.
+#     remaining_targets = pc2.copy()
+#     
+#     for n1 in pc1:
+#         # Find the closest note in the remaining targets
+#         best_dist = 100
+#         best_target_idx = -1
+#         
+#         for i, n2 in enumerate(remaining_targets):
+#             # Calculate distance on the circle (0-6)
+#             # e.g. Distance between 0 (C) and 11 (B) is 1, not 11.
+#             diff = abs(n1 - n2)
+#             dist = min(diff, 12 - diff)
+#             
+#             if dist < best_dist:
+#                 best_dist = dist
+#                 best_target_idx = i
+#         
+#         # Add to total
+#         total_movement += best_dist
+#         
+#         # Remove the used target so other voices find their own path
+#         # (If lists are different lengths, handle gracefully)
+#         if best_target_idx != -1:
+#             remaining_targets.pop(best_target_idx)
+#     
+#     return total_movement
 
 
 def soft_voice_leading_denominator(voice_distance: float) -> float:
@@ -243,7 +313,7 @@ def build_chord_database(home_root: int) -> List[Dict]:
     """
     Build database of all possible chords with their properties.
     Each chord has roughness (0-1), distance (0-1), and tension (0-1) pre-computed.
-    Tension = (roughness + distance) / 2
+    Tension = distance
     """
     chords = []
     for root in range(12):
@@ -341,7 +411,10 @@ def brute_force_optimize(
                         d_tension = path[i]["tension"] - path[i-1]["tension"]
                         
                         # C. Calculate Voice Leading Distance (in semitones)
-                        d_voice = voice_leading_cost(path[i-1]["notes"], path[i]["notes"])
+                        # Convert MIDI notes to frequencies for voice_leading_cost_freq
+                        freq1 = [midi_to_freq(n) for n in path[i-1]["notes"]]
+                        freq2 = [midi_to_freq(n) for n in path[i]["notes"]]
+                        d_voice = voice_leading_cost_freq(freq1, freq2)
                         
                         # D. Use soft denominator to avoid punishing larger moves too hard
                         # Formula: log2(voice_distance + 1) + 1
@@ -408,7 +481,10 @@ def print_progression(path: List[Dict], target_curve: List[float]):
         
         target_slope = target_slopes[i-1]
         d_tension = chord["tension"] - prev_chord["tension"]
-        d_voice = voice_leading_cost(prev_chord["notes"], chord["notes"])
+        # Convert MIDI notes to frequencies for voice_leading_cost_freq
+        freq1 = [midi_to_freq(n) for n in prev_chord["notes"]]
+        freq2 = [midi_to_freq(n) for n in chord["notes"]]
+        d_voice = voice_leading_cost_freq(freq1, freq2)
         soft_denom = soft_voice_leading_denominator(d_voice)
         actual_rate = d_tension / soft_denom
         rate_diff = abs(actual_rate - target_slope)
