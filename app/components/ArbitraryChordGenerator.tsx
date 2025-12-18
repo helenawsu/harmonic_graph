@@ -250,7 +250,7 @@ function FrequencyEditor({
       </div>
       
       {/* Help text */}
-      <div style={{ fontSize: 9, color: "#444", textAlign: "center", marginTop: 4 }}>
+      <div style={{ fontSize: 9, color: "#aaaaaa", textAlign: "center", marginTop: 4 }}>
         drag ← lower | higher → | click = root | dbl-click = edit
       </div>
     </div>
@@ -272,6 +272,8 @@ export default function ArbitraryChordGenerator() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isAnalyzeHovered, setIsAnalyzeHovered] = useState(false);
+  const [isGenerateHovered, setIsGenerateHovered] = useState(false);
   
   const [palette, setPalette] = useState<PaletteAnalysis | null>(null);
   const [result, setResult] = useState<ProgressionResult | null>(null);
@@ -425,7 +427,16 @@ export default function ArbitraryChordGenerator() {
 
       {/* Analyze */}
       <div style={{ marginBottom: 20 }}>
-        <button onClick={analyzePalette} disabled={isAnalyzing}>
+        <button 
+          onClick={analyzePalette} 
+          disabled={isAnalyzing} 
+          style={{ 
+            cursor: "pointer",
+            border: isAnalyzeHovered ? "1px solid white" : "none",
+          }}
+          onMouseEnter={() => setIsAnalyzeHovered(true)}
+          onMouseLeave={() => setIsAnalyzeHovered(false)}
+        >
           {isAnalyzing ? "Analyzing..." : "1. Analyze Chord Palette"}
         </button>
       </div>
@@ -491,7 +502,16 @@ export default function ArbitraryChordGenerator() {
       {/* Generate */}
       {palette && (
         <div style={{ marginBottom: 20 }}>
-          <button onClick={generateProgression} disabled={isGenerating || isPlaying}>
+          <button 
+            onClick={generateProgression} 
+            disabled={isGenerating || isPlaying} 
+            style={{ 
+              cursor: "pointer",
+              border: isGenerateHovered ? "1px solid white" : "none",
+            }}
+            onMouseEnter={() => setIsGenerateHovered(true)}
+            onMouseLeave={() => setIsGenerateHovered(false)}
+          >
             {isGenerating ? "Generating..." : "3. Generate & Play"}
           </button>
           {result && !isPlaying && (

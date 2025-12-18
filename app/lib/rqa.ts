@@ -123,7 +123,7 @@ export function snapToJustIntonation(ratio: number, tolerance: number = RATIO_TO
     for (const frac of FAREY_GRID) {
         const deviation = Math.abs(octaveReduced - frac.value);
         
-        if (deviation / Math.max(frac.value, 0.001) <= tolerance) {
+        if (deviation / frac.value <= tolerance) {
             const score = frac.numerator + frac.denominator;
             if (score < bestScore) {
                 bestScore = score;
@@ -151,12 +151,12 @@ export function ratioStabilityScore(freq1: number, freq2: number): { score: numb
     while (actualRatio < 1.0) actualRatio *= 2.0;
     
     let bestScore = Infinity;
-    let bestName = "unknown";
+    let bestName = "out of range";
     
     for (const frac of FAREY_GRID) {
         const deviation = Math.abs(actualRatio - frac.value);
         
-        if (deviation / Math.max(frac.value, 0.001) <= RATIO_TOLERANCE) {
+        if (deviation / frac.value <= RATIO_TOLERANCE) {
             if (frac.numerator === frac.denominator) continue;
             const score = frac.numerator + frac.denominator;
             if (score < bestScore) {
@@ -573,19 +573,32 @@ export function findBestTriadsPerRoot(
         const freqB = leastStableInterval.to;
         
         // Find which note to replace (not the root if interval involves root)
+        // intervals are: [root-note1, root-note2, note1-note2]
         let freqToReplace: number;
         let idxToReplace: number;
         
+        // Helper to find index in otherIndices for a given frequency
+        const findOtherIdx = (freq: number): number => {
+            for (let j = 0; j < majorTriad.otherFreqs.length; j++) {
+                if (Math.abs(majorTriad.otherFreqs[j] - freq) < 0.1) {
+                    return majorTriad.otherIndices[j];
+                }
+            }
+            return majorTriad.otherIndices[0]; // Fallback
+        };
+        
         if (Math.abs(freqA - rootFreq) < 0.1) {
+            // freq_a is root, so replace freq_b
             freqToReplace = freqB;
-            idxToReplace = majorTriad.otherIndices[majorTriad.otherFreqs.indexOf(freqB) >= 0 ? majorTriad.otherFreqs.findIndex(f => Math.abs(f - freqB) < 0.1) : 0];
+            idxToReplace = findOtherIdx(freqB);
         } else if (Math.abs(freqB - rootFreq) < 0.1) {
+            // freq_b is root, so replace freq_a
             freqToReplace = freqA;
-            idxToReplace = majorTriad.otherIndices[majorTriad.otherFreqs.findIndex(f => Math.abs(f - freqA) < 0.1)];
+            idxToReplace = findOtherIdx(freqA);
         } else {
-            // Interval is between the two other notes, replace the first one
+            // Interval is between the two other notes, replace the first one (freqA)
             freqToReplace = freqA;
-            idxToReplace = majorTriad.otherIndices[majorTriad.otherFreqs.findIndex(f => Math.abs(f - freqA) < 0.1)];
+            idxToReplace = findOtherIdx(freqA);
         }
         
         // Find nearest neighbors (higher and lower in the original frequency list)
