@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { spawn } from 'child_process';
-import path from 'path';
+import { buildChordDatabase } from '@/app/lib/rqa';
 
 export async function POST(request: NextRequest) {
     try {
@@ -15,49 +14,22 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        // Build command - run chord_progression_setup.py with --json-output flag
-        const pythonPath = path.join(process.cwd(), '.venv', 'bin', 'python');
-        const scriptPath = path.join(process.cwd(), 'scripts', 'analyze_palette_api.py');
+        const validHomeIdx = (homeIdx ?? 0) % frequencies.length;
 
-        const args = [
-            scriptPath,
-            '--frequencies', ...frequencies.map(String),
-            '--home-idx', String(homeIdx ?? 0),
-        ];
+        // Build chord database with RQA
+        const chords = buildChordDatabase(frequencies, validHomeIdx);
 
-        const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-            const proc = spawn(pythonPath, args, {
-                cwd: process.cwd(),
-            });
+        // Format output
+        const output = {
+            home_freq: frequencies[validHomeIdx],
+            frequencies: frequencies,
+            chords: chords.map(chord => ({
+                frequencies: chord.frequencies,
+                tension: chord.tension,
+            }))
+        };
 
-            let stdout = '';
-            let stderr = '';
-
-            proc.stdout.on('data', (data) => {
-                stdout += data.toString();
-            });
-
-            proc.stderr.on('data', (data) => {
-                stderr += data.toString();
-            });
-
-            proc.on('close', (code) => {
-                if (code === 0) {
-                    resolve({ stdout, stderr });
-                } else {
-                    reject(new Error(`Process exited with code ${code}: ${stderr}`));
-                }
-            });
-
-            proc.on('error', (err) => {
-                reject(err);
-            });
-        });
-
-        // Parse JSON output
-        const analysis = JSON.parse(result.stdout);
-
-        return NextResponse.json(analysis);
+        return NextResponse.json(output);
 
     } catch (error) {
         console.error('Error analyzing palette:', error);

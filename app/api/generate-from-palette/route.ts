@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { spawn } from 'child_process';
-import path from 'path';
+import { buildChordDatabase, bruteForceOptimize } from '@/app/lib/rqa';
 
 export async function POST(request: NextRequest) {
     try {
@@ -22,54 +21,48 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        const pythonPath = path.join(process.cwd(), '.venv', 'bin', 'python');
-        const scriptPath = path.join(process.cwd(), 'scripts', 'generate_progression_api.py');
+        const validHomeIdx = (homeIdx ?? 0) % frequencies.length;
+        const validTemperature = temperature ?? 0.01;
 
-        const args = [
-            scriptPath,
-            '--frequencies', ...frequencies.map(String),
-            '--home-idx', String(homeIdx ?? 0),
-            '--curve', ...curve.map(String),
-            '--temperature', String(temperature ?? 0.01),
-        ];
+        // Set seed if provided (JavaScript doesn't have built-in seeded random, but we can ignore for now)
+        // For production, consider using a seeded PRNG library
 
-        if (seed !== undefined) {
-            args.push('--seed', String(seed));
+        // Build chord database with RQA
+        const chords = buildChordDatabase(frequencies, validHomeIdx);
+
+        if (chords.length < 4) {
+            return NextResponse.json(
+                { error: `Not enough chords generated: ${chords.length}` },
+                { status: 400 }
+            );
         }
 
-        const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-            const proc = spawn(pythonPath, args, {
-                cwd: process.cwd(),
-            });
+        // Optimize
+        const { bestPath, bestScore } = bruteForceOptimize(
+            chords,
+            curve,
+            validTemperature
+        );
 
-            let stdout = '';
-            let stderr = '';
+        if (!bestPath) {
+            return NextResponse.json(
+                { error: 'Optimization failed' },
+                { status: 500 }
+            );
+        }
 
-            proc.stdout.on('data', (data) => {
-                stdout += data.toString();
-            });
+        // Format output
+        const output = {
+            chords: bestPath.map(chord => ({
+                frequencies: chord.frequencies,
+                tension: chord.tension,
+            })),
+            totalCost: bestScore,
+            curve: curve,
+            temperature: validTemperature,
+        };
 
-            proc.stderr.on('data', (data) => {
-                stderr += data.toString();
-            });
-
-            proc.on('close', (code) => {
-                if (code === 0) {
-                    resolve({ stdout, stderr });
-                } else {
-                    reject(new Error(`Process exited with code ${code}: ${stderr}`));
-                }
-            });
-
-            proc.on('error', (err) => {
-                reject(err);
-            });
-        });
-
-        // Parse JSON output
-        const progression = JSON.parse(result.stdout);
-
-        return NextResponse.json(progression);
+        return NextResponse.json(output);
 
     } catch (error) {
         console.error('Error generating progression:', error);
