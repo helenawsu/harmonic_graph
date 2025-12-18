@@ -77,20 +77,20 @@ const FAREY_GRID = generateBidirectionalFareyGrid(50);
 const RATIO_TOLERANCE = 0.01;
 
 // =============================================================================
-// RQA Parameters - ULTRA OPTIMIZED for browser speed
+// RQA Parameters - Matched to Python chord_progression_setup.py
 // =============================================================================
 
 const BASELINE_FREQ = 400.0;
 const BASELINE_SR = 8000;
 const SAMPLES_PER_CYCLE = BASELINE_SR / BASELINE_FREQ; // = 20
 
-// Heavily reduced parameters for fast browser computation
-const RQA_DURATION = 0.05;  // Very short - just enough for pattern detection
-const RQA_WINDOW = 100;     // Much smaller window
-const RQA_SHIFT = 100;      // Single window (no overlap)
-const RQA_EMB_DIM = 3;      // Minimal embedding dimension
-const RQA_DELAY = 2;
-const RQA_EPS_FACTOR = 0.15;
+// Parameters from Python (matched exactly)
+const RQA_DURATION = 0.3;   // Same as Python
+const RQA_WINDOW = 480;     // Same as Python
+const RQA_SHIFT = 48;       // Same as Python
+const RQA_EMB_DIM = 5;      // Same as Python
+const RQA_DELAY = 3;        // Same as Python
+const RQA_EPS_FACTOR = 0.1; // Same as Python
 const CHORD_ROOT_BOOST = 10.0;
 
 function getSrForFreq(rootFreq: number): number {
@@ -305,8 +305,20 @@ export function computeTriadRqa(rootFreq: number, allFrequencies: number[]): { r
         }
     }
     
-    // Single window RQA (fast mode)
-    const rqaScore = percentRecurrenceFast(sig);
+    // Sliding window RQA (matching Python)
+    const results: number[] = [];
+    let idx = 0;
+    while (idx + RQA_WINDOW <= numSamples) {
+        const window = sig.slice(idx, idx + RQA_WINDOW);
+        const pr = percentRecurrenceFast(window);
+        results.push(pr);
+        idx += RQA_SHIFT;
+    }
+    
+    const rqaScore = results.length > 0 
+        ? results.reduce((a, b) => a + b, 0) / results.length 
+        : 0.0;
+    
     const bassWeight = calculateBassStabilityWeight(rootFreq, allFrequencies);
     
     return { rqaScore, bassWeight };
@@ -376,8 +388,19 @@ export function computeDistanceFromHomeWithBoost(
         }
     }
     
-    // Single window RQA (fast mode)
-    const chordWithHomeRqa = percentRecurrenceFast(sig);
+    // Sliding window RQA (matching Python)
+    const results: number[] = [];
+    let idx = 0;
+    while (idx + RQA_WINDOW <= numSamples) {
+        const window = sig.slice(idx, idx + RQA_WINDOW);
+        const pr = percentRecurrenceFast(window);
+        results.push(pr);
+        idx += RQA_SHIFT;
+    }
+    
+    const chordWithHomeRqa = results.length > 0 
+        ? results.reduce((a, b) => a + b, 0) / results.length 
+        : 0.0;
     
     const normalizedRecurrence = homeOnlyRqa > 0.0001 
         ? chordWithHomeRqa / homeOnlyRqa 
@@ -397,7 +420,7 @@ export function computeDistanceFromHome(
 }
 
 // =============================================================================
-// Chord Database Builder - Limited to 2 chords per root (major/minor equivalent)
+// Chord Database Builder - Matching Python's find_best_triads_per_root exactly
 // =============================================================================
 
 export interface ChordInfo {
@@ -406,6 +429,23 @@ export interface ChordInfo {
     rqaRecurrence: number;
     bassWeight: number;
     tension: number;
+}
+
+interface IntervalInfo {
+    from: number;
+    to: number;
+    score: number;
+    name: string;
+}
+
+interface TriadCandidate {
+    rootFreq: number;
+    otherFreqs: number[];
+    otherIndices: number[];
+    rqaScore: number;
+    bassWeight: number;
+    combinedScore: number;
+    intervals: IntervalInfo[];
 }
 
 function combinations<T>(arr: T[], k: number): T[][] {
@@ -420,13 +460,41 @@ function combinations<T>(arr: T[], k: number): T[][] {
 }
 
 /**
+ * Calculate stability score for a triad with a FIXED ROOT.
+ * Returns intervals array with [root-note1, root-note2, note1-note2]
+ */
+function triadStabilityScoreRooted(rootFreq: number, otherFreqs: number[]): IntervalInfo[] {
+    const sortedOthers = [...otherFreqs].sort((a, b) => a - b);
+    
+    const intervals: IntervalInfo[] = [];
+    
+    // Interval 1: Root to lower note
+    const { score: score1, name: name1 } = ratioStabilityScore(rootFreq, sortedOthers[0]);
+    intervals.push({ from: rootFreq, to: sortedOthers[0], score: score1, name: name1 });
+    
+    // Interval 2: Root to upper note
+    const { score: score2, name: name2 } = ratioStabilityScore(rootFreq, sortedOthers[1]);
+    intervals.push({ from: rootFreq, to: sortedOthers[1], score: score2, name: name2 });
+    
+    // Interval 3: Between the two other notes
+    const { score: score3, name: name3 } = ratioStabilityScore(sortedOthers[0], sortedOthers[1]);
+    intervals.push({ from: sortedOthers[0], to: sortedOthers[1], score: score3, name: name3 });
+    
+    return intervals;
+}
+
+/**
  * For each root note, find the best 2 triads (major and minor equivalent).
- * This limits the chord palette to 2 * n chords instead of n * C(n-1,2).
+ * 
+ * STAGE 1: Find most stable triad (major equivalent) by RQA + bass weight
+ * STAGE 2: Find minor equivalent by:
+ *   - Identify least stable note in the major triad
+ *   - Replace with nearest neighbor (higher or lower)
+ *   - Select the one with lower RQA as minor
  */
 export function findBestTriadsPerRoot(
     frequencies: number[],
-    homeIdx: number = 0,
-    topN: number = 2
+    homeIdx: number = 0
 ): ChordInfo[] {
     const n = frequencies.length;
     const homeFreq = frequencies[homeIdx];
@@ -434,50 +502,167 @@ export function findBestTriadsPerRoot(
     
     for (let rootIdx = 0; rootIdx < n; rootIdx++) {
         const rootFreq = frequencies[rootIdx];
-        const otherIndices = Array.from({ length: n }, (_, i) => i).filter(i => i !== rootIdx);
         
-        // Generate all triads for this root and score them
-        const triadsForRoot: { chord: ChordInfo; combinedScore: number }[] = [];
+        // Get all other notes (excluding root)
+        const otherNotes: { idx: number; freq: number }[] = [];
+        for (let i = 0; i < n; i++) {
+            if (i !== rootIdx) {
+                otherNotes.push({ idx: i, freq: frequencies[i] });
+            }
+        }
         
-        for (const combo of combinations(otherIndices, 2)) {
-            const otherFreqs = combo.map(i => frequencies[i]).sort((a, b) => a - b);
-            const allFreqs = [rootFreq, ...otherFreqs];
+        // STAGE 1: Find all candidates and score them
+        const triadCandidates: TriadCandidate[] = [];
+        
+        for (const combo of combinations(otherNotes, 2)) {
+            const otherIndices = combo.map(c => c.idx);
+            const otherFreqs = combo.map(c => c.freq);
+            
+            const intervals = triadStabilityScoreRooted(rootFreq, otherFreqs);
+            const allFreqs = [rootFreq, ...otherFreqs.sort((a, b) => a - b)];
             
             const { rqaScore, bassWeight } = computeTriadRqa(rootFreq, allFreqs);
-            const { rqaWithHome } = computeDistanceFromHome(homeFreq, allFreqs);
             
             // Combined score: higher = more stable (for finding major equivalent)
             const bonusFactor = 0.05;
             const combinedScore = rqaScore + bassWeight * bonusFactor;
             
-            triadsForRoot.push({
-                chord: {
-                    frequencies: allFreqs,
-                    rqaWithHome,
-                    rqaRecurrence: rqaScore,
-                    bassWeight,
-                    tension: 0,
-                },
+            triadCandidates.push({
+                rootFreq,
+                otherFreqs: otherFreqs.sort((a, b) => a - b),
+                otherIndices,
+                rqaScore,
+                bassWeight,
                 combinedScore,
+                intervals,
             });
         }
         
-        if (triadsForRoot.length === 0) continue;
+        if (triadCandidates.length === 0) continue;
         
-        // Sort by combined score (highest first = most stable = "major")
-        triadsForRoot.sort((a, b) => b.combinedScore - a.combinedScore);
+        // Sort to find most stable (highest score)
+        triadCandidates.sort((a, b) => b.combinedScore - a.combinedScore);
+        const majorTriad = triadCandidates[0];
         
-        // Take top N chords per root (default 2: major + minor equivalent)
-        const selectedChords = triadsForRoot.slice(0, topN).map(t => t.chord);
-        allChords.push(...selectedChords);
+        // Add major triad to results
+        const majorAllFreqs = [majorTriad.rootFreq, ...majorTriad.otherFreqs];
+        const { rqaWithHome: majorRqaWithHome } = computeDistanceFromHome(homeFreq, majorAllFreqs);
+        allChords.push({
+            frequencies: majorAllFreqs,
+            rqaWithHome: majorRqaWithHome,
+            rqaRecurrence: majorTriad.rqaScore,
+            bassWeight: majorTriad.bassWeight,
+            tension: 0,
+        });
+        
+        // STAGE 2: Find minor equivalent by replacing least stable note
+        const intervals = majorTriad.intervals;
+        
+        // Find the interval with highest stability score (least stable = highest score)
+        let leastStableIdx = 0;
+        let maxScore = intervals[0].score;
+        for (let i = 1; i < intervals.length; i++) {
+            if (intervals[i].score > maxScore) {
+                maxScore = intervals[i].score;
+                leastStableIdx = i;
+            }
+        }
+        
+        const leastStableInterval = intervals[leastStableIdx];
+        const freqA = leastStableInterval.from;
+        const freqB = leastStableInterval.to;
+        
+        // Find which note to replace (not the root if interval involves root)
+        let freqToReplace: number;
+        let idxToReplace: number;
+        
+        if (Math.abs(freqA - rootFreq) < 0.1) {
+            freqToReplace = freqB;
+            idxToReplace = majorTriad.otherIndices[majorTriad.otherFreqs.indexOf(freqB) >= 0 ? majorTriad.otherFreqs.findIndex(f => Math.abs(f - freqB) < 0.1) : 0];
+        } else if (Math.abs(freqB - rootFreq) < 0.1) {
+            freqToReplace = freqA;
+            idxToReplace = majorTriad.otherIndices[majorTriad.otherFreqs.findIndex(f => Math.abs(f - freqA) < 0.1)];
+        } else {
+            // Interval is between the two other notes, replace the first one
+            freqToReplace = freqA;
+            idxToReplace = majorTriad.otherIndices[majorTriad.otherFreqs.findIndex(f => Math.abs(f - freqA) < 0.1)];
+        }
+        
+        // Find nearest neighbors (higher and lower in the original frequency list)
+        const neighborIndices: number[] = [];
+        
+        // Lower neighbor
+        const lowerCandidates = frequencies
+            .map((f, i) => ({ f, i }))
+            .filter(x => x.i !== rootIdx && x.f < freqToReplace);
+        if (lowerCandidates.length > 0) {
+            const closest = lowerCandidates.reduce((a, b) => a.f > b.f ? a : b);
+            neighborIndices.push(closest.i);
+        }
+        
+        // Higher neighbor
+        const higherCandidates = frequencies
+            .map((f, i) => ({ f, i }))
+            .filter(x => x.i !== rootIdx && x.f > freqToReplace);
+        if (higherCandidates.length > 0) {
+            const closest = higherCandidates.reduce((a, b) => a.f < b.f ? a : b);
+            neighborIndices.push(closest.i);
+        }
+        
+        // Create minor candidates by replacing with neighbors
+        const minorCandidates: { allFreqs: number[]; rqaScore: number; bassWeight: number }[] = [];
+        
+        for (const neighborIdx of neighborIndices) {
+            const neighborFreq = frequencies[neighborIdx];
+            
+            // Create new chord with neighbor note replacing the least stable
+            const newOtherFreqs = [...majorTriad.otherFreqs];
+            const newOtherIndices = [...majorTriad.otherIndices];
+            
+            // Find and replace the old note
+            for (let j = 0; j < newOtherIndices.length; j++) {
+                if (newOtherIndices[j] === idxToReplace) {
+                    newOtherFreqs[j] = neighborFreq;
+                    newOtherIndices[j] = neighborIdx;
+                    break;
+                }
+            }
+            
+            // Sort the other notes
+            const sortedOtherFreqs = [...newOtherFreqs].sort((a, b) => a - b);
+            const minorAllFreqs = [rootFreq, ...sortedOtherFreqs];
+            
+            const { rqaScore, bassWeight } = computeTriadRqa(rootFreq, minorAllFreqs);
+            
+            minorCandidates.push({
+                allFreqs: minorAllFreqs,
+                rqaScore,
+                bassWeight,
+            });
+        }
+        
+        // Select best minor (lowest RQA = more stable for minor)
+        if (minorCandidates.length > 0) {
+            minorCandidates.sort((a, b) => a.rqaScore - b.rqaScore);
+            const minorTriad = minorCandidates[0];
+            
+            const { rqaWithHome: minorRqaWithHome } = computeDistanceFromHome(homeFreq, minorTriad.allFreqs);
+            allChords.push({
+                frequencies: minorTriad.allFreqs,
+                rqaWithHome: minorRqaWithHome,
+                rqaRecurrence: minorTriad.rqaScore,
+                bassWeight: minorTriad.bassWeight,
+                tension: 0,
+            });
+        }
     }
     
     return allChords;
 }
 
 export function buildChordDatabase(frequencies: number[], homeIdx: number = 0): ChordInfo[] {
-    // Use the limited chord palette (2 per root) instead of all combinations
-    const allChords = findBestTriadsPerRoot(frequencies, homeIdx, 2);
+    // Use the limited chord palette (2 per root) matching Python exactly
+    const allChords = findBestTriadsPerRoot(frequencies, homeIdx);
     
     if (allChords.length === 0) return [];
     
