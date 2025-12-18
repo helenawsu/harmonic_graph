@@ -1,5 +1,5 @@
-import ChordProgressionGenerator from "./components/ChordProgressionGenerator";
+import ArbitraryChordGenerator from "./components/ArbitraryChordGenerator";
 
 export default function Home() {
-  return <ChordProgressionGenerator />;
+  return <ArbitraryChordGenerator />;
 }

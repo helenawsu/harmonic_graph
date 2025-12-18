@@ -68,7 +68,7 @@ export default function TensionCurveEditor({
     ctx.lineTo(WIDTH - PADDING, zeroY);
     ctx.stroke();
 
-    ctx.strokeStyle = "#4488ff";
+    ctx.strokeStyle = "#fff";
     ctx.lineWidth = 2;
     ctx.beginPath();
     for (let i = 0; i < values.length; i++) {
@@ -84,7 +84,7 @@ export default function TensionCurveEditor({
       const y = valueToY(values[i]);
       ctx.beginPath();
       ctx.arc(x, y, POINT_RADIUS, 0, Math.PI * 2);
-      ctx.fillStyle = draggingIndex === i ? "#88aaff" : "#4488ff";
+      ctx.fillStyle = "#000";
       ctx.fill();
       ctx.strokeStyle = "#fff";
       ctx.lineWidth = 2;

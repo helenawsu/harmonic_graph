@@ -87,3 +87,24 @@ export function resumeAudioIfNeeded() {
     if (ctx.state === 'suspended') return ctx.resume();
     return Promise.resolve();
 }
+
+// Play arbitrary frequencies (Hz) directly - for microtonal/custom tuning support
+export function playFrequencies(freqs: number[], opts?: { duration?: number }) {
+    const dur = opts?.duration ?? 1.6;
+    const ctx = getAudioCtx();
+    const now = ctx.currentTime;
+
+    for (let i = 0; i < freqs.length; i++) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freqs[i];
+        gain.gain.setValueAtTime(0.0001, now);
+        // ADSR envelope
+        gain.gain.exponentialRampToValueAtTime(0.12 / (i + 1) + 0.02, now + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + dur - 0.05);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + dur + 0.1);
+    }
+}
