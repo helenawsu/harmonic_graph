@@ -2,6 +2,7 @@
 import React, { useState, useCallback, useRef } from "react";
 import TensionCurveEditor from "./TensionCurveEditor";
 import { playFrequencies, resumeAudioIfNeeded } from "../tonnetz/audio";
+import { voiceLeadingCostFreq, softVoiceLeadingDenominator } from "../lib/rqa";
 
 interface ChordInfo {
   frequencies: number[];
@@ -530,26 +531,53 @@ export default function ArbitraryChordGenerator() {
       {result && (
         <div>
           <h3>Progression</h3>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
             {result.chords.map((chord, i) => (
-              <div
-                key={i}
-                style={{
-                  padding: 10,
-                  background: currentChordIndex === i ? "#335" : "#222",
-                  border: "1px solid #444",
-                  minWidth: 120,
-                }}
-              >
-                <div style={{ fontSize: 11, color: "#aaa" }}>
-                  {chord.frequencies.map(f => f.toFixed(1)).join(", ")}
+              <div key={i}>
+                <div
+                  style={{
+                    padding: 10,
+                    background: currentChordIndex === i ? "#335" : "#222",
+                    border: "1px solid #444",
+                    minWidth: 120,
+                  }}
+                >
+                  <div style={{ fontSize: 11, color: "#aaa" }}>
+                    {chord.frequencies.map(f => f.toFixed(1)).join(", ")}
+                  </div>
+                  <div style={{ fontSize: 12, marginTop: 5 }}>T: {chord.tension.toFixed(3)}</div>
                 </div>
-                <div style={{ fontSize: 12, marginTop: 5 }}>T: {chord.tension.toFixed(3)}</div>
+                {/* Transition metrics */}
+                {i < result.chords.length - 1 && (
+                  (() => {
+                    const nextChord = result.chords[i + 1];
+                    const deltaTension = nextChord.tension - chord.tension;
+                    const voiceLeadingCost = voiceLeadingCostFreq(chord.frequencies, nextChord.frequencies);
+                    const softDenom = softVoiceLeadingDenominator(voiceLeadingCost);
+                    const normalizedDeltaTension = deltaTension / softDenom;
+                    
+                    return (
+                      <div
+                        style={{
+                          fontSize: 10,
+                          color: "#666",
+                          marginTop: 5,
+                          paddingTop: 5,
+                          borderTop: "1px solid #444",
+                          textAlign: "center",
+                        }}
+                      >
+                        <div>ΔT: {normalizedDeltaTension > 0 ? "+" : ""}{normalizedDeltaTension.toFixed(3)}</div>
+                        <div>VL: {voiceLeadingCost.toFixed(2)}</div>
+                      </div>
+                    );
+                  })()
+                )}
               </div>
             ))}
           </div>
           <div style={{ fontSize: 11, color: "#888", marginTop: 10 }}>
-            Cost: {result.totalCost.toFixed(4)}
+            Deviation from path: {result.totalCost.toFixed(4)}
           </div>
         </div>
       )}
