@@ -361,18 +361,17 @@ export function computeDistanceFromHomeWithBoost(
     for (let i = 0; i < numSamples; i++) {
         const t = i / sr;
         
-        // Home note
+        // Home note - BOOSTED by 10x for harmonic grounding
         const homeRatio = snappedRatios[0];
-        sig[i] += Math.sin(2.0 * Math.PI * homeFreq * homeRatio * t);
+        sig[i] += CHORD_ROOT_BOOST * Math.sin(2.0 * Math.PI * homeFreq * homeRatio * t);
         
-        // Chord frequencies with boost for chord root
+        // Chord frequencies at normal amplitude
         for (let j = 0; j < chordFrequencies.length; j++) {
             const freq = chordFrequencies[j];
             const ratio = snappedRatios[j + 1];
             const f = homeFreq * ratio;
             
-            const amplitude = Math.abs(freq - chordRootFreq) < 0.1 ? CHORD_ROOT_BOOST : 1.0;
-            sig[i] += amplitude * Math.sin(2.0 * Math.PI * f * t);
+            sig[i] += Math.sin(2.0 * Math.PI * f * t);
         }
     }
     

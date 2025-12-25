@@ -757,21 +757,19 @@ def compute_distance_from_home_with_boost(
     t = np.arange(0, RQA_DURATION, 1.0 / sr)
     sig = np.zeros_like(t)
     
-    # Add home note at normal amplitude
+    # Add home note at BOOSTED amplitude (10x) to emphasize home-to-chord relationship
+    # This makes chords containing the home note (e.g., I, IV, vi) have high recurrence
+    # And chords with notes close to home (e.g., bII with C# near C) show dissonance
     home_ratio = snapped_ratios[0]  # Should be 1.0
-    sig += np.sin(2.0 * math.pi * home_freq * home_ratio * t)
+    sig += CHORD_ROOT_BOOST * np.sin(2.0 * math.pi * home_freq * home_ratio * t)
     
-    # Add chord frequencies with CHORD_ROOT_BOOST for the identified chord root
+    # Add chord frequencies at normal amplitude
     for i, freq in enumerate(chord_frequencies):
         ratio = snapped_ratios[i + 1]
         f = home_freq * ratio
         
-        # Apply CHORD_ROOT_BOOST to the identified chord root
-        # This makes chords with roots matching home much more consonant
-        if abs(freq - chord_root_freq) < 0.1:  # Account for float precision
-            amplitude = CHORD_ROOT_BOOST
-        else:
-            amplitude = 1.0
+        # All chord tones at normal amplitude (home is the one boosted)
+        amplitude = 1.0
         
         sig += amplitude * np.sin(2.0 * math.pi * f * t)
     

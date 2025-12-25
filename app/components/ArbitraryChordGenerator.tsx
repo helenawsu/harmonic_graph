@@ -28,7 +28,7 @@ interface ProgressionResult {
 }
 
 // Frequency range constants
-const MIN_FREQ = 100;  // ~G2
+const MIN_FREQ = 150;  // ~D3
 const MAX_FREQ = 300;  // ~D4
 
 // Generate evenly spaced frequencies in log space
