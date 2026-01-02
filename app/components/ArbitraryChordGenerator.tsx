@@ -395,8 +395,17 @@ export default function ArbitraryChordGenerator() {
 
   return (
     <div style={{ padding: 20, fontFamily: "monospace", maxWidth: 700 }}>
-      <h1>Chord Progression Generator</h1>
-      <p style={{ color: "#888", fontSize: 12 }}>Continuous frequency space</p>
+      <h1>Continuous Frequency Chord Progression Generator</h1>
+      <p style={{ marginBottom: 12 }}>
+        <a
+          href="https://helenasu-blog.vercel.app/posts/music-proj0"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: "#888", fontSize: 12, textDecoration: "underline" }}
+        >
+          Blog for details
+        </a>
+      </p>
 
       {/* Number of notes */}
       <div style={{ marginBottom: 20 }}>
